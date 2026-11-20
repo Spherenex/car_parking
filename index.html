@@ -79,7 +79,7 @@ const routesRef = ref(db, routesPath);
 const labels = {F:"Forward", B:"Backward", L:"Left", R:"Right", S:"Stop"};
 const el = id => document.getElementById(id);
 const buttons = [...document.querySelectorAll("[data-dir]")];
-let online = false, ready = false, revision = 0, auto = false;
+let online = false, ready = false, revision = 0, commandRevision = 0, auto = false;
 let active = null, playback = null, editId = null, saving = false;
 let routes = {}, routesLoaded = false, nameIndex = 0;
 let unsubscribe = [];
@@ -116,7 +116,10 @@ function writeDirection(direction) {
 }
 
 function send(direction) {
+  const command = ++commandRevision;
   writeDirection(direction).catch(error => {
+    // A superseded write must never stop a newer active direction.
+    if (command !== commandRevision) return;
     if (direction !== "S") release(null, false);
     message("Direction write failed. " + error.message, true);
   });
@@ -241,9 +244,7 @@ function suspend() {
   if (playback) stopPlayback();
   release();
 }
-window.addEventListener("blur", suspend);
 window.addEventListener("pagehide", suspend);
-document.addEventListener("visibilitychange", () => { if (document.hidden) suspend(); });
 
 function addRow(step = {direction:"S", durationMs:1000}) {
   const row = document.createElement("div");
