@@ -34,7 +34,7 @@ label{display:grid;gap:5px;color:var(--muted);font-size:.85rem;margin:10px 0}inp
 <div class="grid">
 <section class="panel">
 <div class="bar"><h2>Joystick</h2><div class="actions short"><button id="manual" aria-pressed="true">Manual</button><button id="auto" aria-pressed="false">Auto</button></div></div>
-<p id="hint">Hold a direction to drive. Release to stop.</p>
+<p id="hint">Click a direction to drive. Click Stop to stop.</p>
 <div class="pad" aria-label="Directional controls">
 <button class="f" data-dir="F" disabled><b>↑</b>Forward</button>
 <button class="l" data-dir="L" disabled><b>←</b>Left</button>
@@ -189,8 +189,8 @@ function changeMode(value) {
   el("auto").setAttribute("aria-pressed", String(auto));
   el("editor").hidden = !auto;
   el("hint").textContent = auto
-    ? "Hold a direction to drive and record its duration. Hold Stop to record a pause."
-    : "Hold a direction to drive. Release to stop.";
+    ? "Click a direction to start recording. The next click finishes that step."
+    : "Click a direction to drive. Click Stop to stop.";
   drawRoutes();
 }
 el("manual").onclick = () => changeMode(false);
@@ -203,21 +203,21 @@ function press(direction, key) {
     return false;
   }
   if (active) {
-    if (direction !== "S" || active.direction === "S") return false;
-    release();
+    if (active.direction === direction) return false;
+    release(null, true, false);
   }
   active = {direction, key, started: performance.now(), record: auto};
   controls();
   send(direction);
-  message(auto ? "Recording " + labels[direction] + "… release to add the step." : labels[direction] + " active.");
+  message(auto ? "Recording " + labels[direction] + "… click another direction or Stop to finish the step." : labels[direction] + " active.");
   return true;
 }
 
-function release(key = null, record = true) {
+function release(key = null, record = true, stop = true) {
   if (!active || (key !== null && active.key !== key)) return;
   const held = active;
   active = null;
-  if (ready && held.direction !== "S") send("S");
+  if (ready && stop && held.direction !== "S") send("S");
   if (record && held.record) {
     const durationMs = Math.max(1, Math.round(performance.now() - held.started));
     addRow({direction: held.direction, durationMs});
@@ -227,31 +227,8 @@ function release(key = null, record = true) {
 }
 
 for (const button of buttons) {
-  button.addEventListener("pointerdown", event => {
-    if (event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
-    event.preventDefault();
-    if (!press(button.dataset.dir, event.pointerId)) return;
-    try { button.setPointerCapture(event.pointerId); }
-    catch { /* Document-level pointerup still completes the press. */ }
-  });
-  for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
-    button.addEventListener(type, event => release(event.pointerId));
-  }
-  button.addEventListener("keydown", event => {
-    if (![" ", "Enter"].includes(event.key)) return;
-    event.preventDefault();
-    if (!event.repeat) press(button.dataset.dir, button);
-  });
-  button.addEventListener("keyup", event => {
-    if ([" ", "Enter"].includes(event.key)) release(button);
-  });
-  button.addEventListener("blur", () => release(button));
+  button.addEventListener("click", () => press(button.dataset.dir, button));
   button.addEventListener("contextmenu", event => event.preventDefault());
-}
-// A release can occur outside the original button when capture is unsupported
-// or cancelled by a mobile browser. Always finish the matching active press.
-for (const type of ["pointerup", "pointercancel"]) {
-  document.addEventListener(type, event => release(event.pointerId), true);
 }
 const keys = {ArrowUp:"F", ArrowDown:"B", ArrowLeft:"L", ArrowRight:"R", Escape:"S"};
 window.addEventListener("keydown", event => {
@@ -260,7 +237,6 @@ window.addEventListener("keydown", event => {
   event.preventDefault();
   if (!event.repeat) press(direction, event.key);
 });
-window.addEventListener("keyup", event => release(event.key));
 function suspend() {
   if (playback) stopPlayback();
   release();
