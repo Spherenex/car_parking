@@ -79,10 +79,12 @@ const routesRef = ref(db, routesPath);
 const labels = {F:"Forward", B:"Backward", L:"Left", R:"Right", S:"Stop"};
 const el = id => document.getElementById(id);
 const buttons = [...document.querySelectorAll("[data-dir]")];
-let online = false, ready = false, revision = 0, commandRevision = 0, auto = false;
+let online = false, ready = false, revision = 0, auto = false;
+let obstacleDetected = false, playbackDirection = "S";
 let active = null, playback = null, editId = null, saving = false;
 let routes = {}, routesLoaded = false, nameIndex = 0;
 let unsubscribe = [];
+let directionWrite = Promise.resolve();
 
 function message(text, error = false) {
   el("status").textContent = text;
@@ -112,24 +114,42 @@ function controls() {
 
 function writeDirection(direction) {
   if (!ready) return Promise.reject(new Error("Firebase control is unavailable."));
-  return set(directionRef, direction);
+  // Serialize writes so an older heartbeat can never finish after and
+  // overwrite a newer button command.
+  const operation = directionWrite.catch(() => {}).then(() => {
+    if (!ready) throw new Error("Firebase control is unavailable.");
+    return set(directionRef, direction);
+  });
+  directionWrite = operation;
+  return operation;
 }
 
 function send(direction) {
-  const command = ++commandRevision;
-  writeDirection(direction).catch(error => {
-    // A superseded write must never stop a newer active direction.
-    if (command !== commandRevision) return;
-    if (direction !== "S") release(null, false);
+  return writeDirection(direction).catch(error => {
     message("Direction write failed. " + error.message, true);
   });
 }
+
+function refreshDirection(direction) {
+  return writeDirection(direction).catch(error => {
+    message("Direction refresh failed. " + error.message, true);
+  });
+}
+
+// Keep a clicked direction alive for vehicle controllers that use a command
+// watchdog. Firebase onDisconnect still forces a safe Stop if this page loses
+// its database connection.
+setInterval(() => {
+  if (!ready || obstacleDetected) return;
+  const direction = playback ? playbackDirection : active?.direction;
+  if (direction && direction !== "S") refreshDirection(direction);
+}, 500);
 
 function watchConnection() {
   unsubscribe.forEach(stop => stop());
   ready = false;
   if (playback) playback.abort();
-  release(null, false);
+  finishActive(false);
   const session = ++revision;
   const permission = error => message("Firebase access failed. " + error.message, true);
   unsubscribe = [
@@ -139,7 +159,7 @@ function watchConnection() {
       ready = false;
       if (!online) {
         if (playback) playback.abort();
-        release(null, false);
+        finishActive(false);
         el("connection").textContent = "Offline";
         message("Firebase connection lost or still connecting.");
         controls();
@@ -165,8 +185,19 @@ function watchConnection() {
       const data = snapshot.val() || {};
       el("battery").textContent = typeof data.Battery === "number" ? data.Battery + "%" : "—";
       el("voltage").textContent = typeof data.Voltage === "number" ? data.Voltage.toFixed(2) + " V" : "—";
-      el("obstacle").textContent = data.Obstacle == 1 ? "Detected" : data.Obstacle == 0 ? "Clear" : "—";
+      obstacleDetected = data.Obstacle == 1;
+      el("obstacle").textContent = obstacleDetected ? "Detected" : data.Obstacle == 0 ? "Clear" : "—";
       el("direction").textContent = data.direction ?? "—";
+      if (obstacleDetected && playback) {
+        stopPlayback();
+        message("Obstacle detected. Route stopped.", true);
+      } else if (obstacleDetected && active && active.direction !== "S") {
+        stopActive(false);
+        message("Obstacle detected. Vehicle stopped.", true);
+      } else if (!obstacleDetected && ready) {
+        const desired = playback ? playbackDirection : active?.direction;
+        if (desired && desired !== "S" && data.direction !== desired) refreshDirection(desired);
+      }
       showSlot("slot1", data.Slot1, data.Ultra_Slot1);
       showSlot("slot2", data.Slot2, data.Ultra_Slot2);
     }, permission),
@@ -186,7 +217,7 @@ function watchConnection() {
 function changeMode(value) {
   if (auto === value) return;
   if (playback) stopPlayback();
-  release();
+  stopActive();
   auto = value;
   el("manual").setAttribute("aria-pressed", String(!auto));
   el("auto").setAttribute("aria-pressed", String(auto));
@@ -199,7 +230,7 @@ function changeMode(value) {
 el("manual").onclick = () => changeMode(false);
 el("auto").onclick = () => changeMode(true);
 
-function press(direction, key) {
+function press(direction) {
   if (!ready || !Object.hasOwn(labels, direction)) return false;
   if (playback) {
     if (direction === "S") stopPlayback();
@@ -207,30 +238,35 @@ function press(direction, key) {
   }
   if (active) {
     if (active.direction === direction) return false;
-    release(null, true, false);
+    finishActive();
   }
-  active = {direction, key, started: performance.now(), record: auto};
+  active = {direction, started: performance.now(), record: auto};
   controls();
   send(direction);
   message(auto ? "Recording " + labels[direction] + "… click another direction or Stop to finish the step." : labels[direction] + " active.");
   return true;
 }
 
-function release(key = null, record = true, stop = true) {
-  if (!active || (key !== null && active.key !== key)) return;
+function finishActive(record = true) {
+  if (!active) return null;
   const held = active;
   active = null;
-  if (ready && stop && held.direction !== "S") send("S");
   if (record && held.record) {
     const durationMs = Math.max(1, Math.round(performance.now() - held.started));
     addRow({direction: held.direction, durationMs});
     message("Recorded " + labels[held.direction] + " for " + durationMs + " ms.");
   }
   controls();
+  return held;
+}
+
+function stopActive(record = true) {
+  const held = finishActive(record);
+  if (ready && held && held.direction !== "S") send("S");
 }
 
 for (const button of buttons) {
-  button.addEventListener("click", () => press(button.dataset.dir, button));
+  button.addEventListener("click", () => press(button.dataset.dir));
   button.addEventListener("contextmenu", event => event.preventDefault());
 }
 const keys = {ArrowUp:"F", ArrowDown:"B", ArrowLeft:"L", ArrowRight:"R", Escape:"S"};
@@ -238,11 +274,11 @@ window.addEventListener("keydown", event => {
   const direction = keys[event.key];
   if (!direction || (event.key !== "Escape" && event.target.matches("input,select,textarea"))) return;
   event.preventDefault();
-  if (!event.repeat) press(direction, event.key);
+  if (!event.repeat) press(direction);
 });
 function suspend() {
   if (playback) stopPlayback();
-  release();
+  stopActive();
 }
 window.addEventListener("pagehide", suspend);
 
@@ -269,7 +305,7 @@ function refreshEditor() {
 }
 
 function edit(key = null, route = null) {
-  release();
+  stopActive();
   editId = key;
   nameIndex = 0;
   el("steps").replaceChildren();
@@ -284,7 +320,7 @@ el("reset").onclick = () => edit();
 el("routeForm").onsubmit = async event => {
   event.preventDefault();
   if (!online || saving || playback) return;
-  release();
+  stopActive();
   const name = el("routeName").value.trim();
   const steps = [...el("steps").children].map(row => {
     const [stepName, duration] = row.querySelectorAll("input");
@@ -380,6 +416,7 @@ function waitForStep(ms, signal) {
 
 function stopPlayback() {
   playback?.abort();
+  playbackDirection = "S";
   if (ready) send("S");
 }
 
@@ -394,12 +431,14 @@ async function runRoute(route) {
     for (const step of route.steps) {
       if (run.signal.aborted) break;
       message(route.name + " · " + step.name + " · " + labels[step.direction]);
+      playbackDirection = step.direction;
       await writeDirection(step.direction);
       await waitForStep(step.durationMs, run.signal);
     }
   } catch (error) {
     failure = error;
   } finally {
+    playbackDirection = "S";
     if (ready) {
       try { await writeDirection("S"); }
       catch (error) { failure ??= error; }
