@@ -10,12 +10,12 @@
 main{max-width:1080px;margin:auto;padding:clamp(16px,4vw,44px)}header,.bar,.actions{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 h1{font-size:clamp(2rem,6vw,3.75rem);letter-spacing:-.06em;margin:0}h2{margin:0;font-size:1.15rem}p{color:var(--muted);line-height:1.5;margin:.7em 0}
 .badge{border:1px solid var(--line);border-radius:30px;padding:8px 13px;color:var(--mint);font-size:.85rem}
-.telemetry{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:24px 0 14px}.tile,.panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:clamp(13px,2.5vw,24px)}
-.tile span{display:block;color:var(--muted);font-size:.8rem}.tile strong{display:block;margin-top:4px;font-size:1.2rem}
+.telemetry{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:24px 0 14px}.tile,.panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:clamp(13px,2.5vw,24px)}
+.tile span{display:block;color:var(--muted);font-size:.8rem}.tile strong{display:block;margin-top:4px;font-size:1.2rem}.tile strong.available{color:var(--mint)}.tile strong.engaged{color:var(--red)}
 .grid{display:grid;grid-template-columns: minmax(270px, .9fr) minmax(0,1.1fr);gap:14px;align-items:start}.stack{display:grid;gap:14px}.panel[hidden]{display:none}
 button,input,select{font:inherit;color:inherit;border:1px solid var(--line);border-radius:10px;background:#152839;padding:9px 11px;min-height:42px}button{cursor:pointer;font-weight:650}button:hover:not(:disabled){border-color:var(--mint)}button:disabled{opacity:.45;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--mint);outline-offset:2px}
 .primary,[aria-pressed=true],.held{background:var(--mint);color:#06271e;border-color:transparent}.danger{color:var(--red)}.pad .danger{background:#482536;color:#ffe0e0;border-color:#895164}.pad .danger.held{background:#fda5a5;color:#381313}
-.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:340px;margin:22px auto}.pad button{touch-action:none;user-select:none;min-height:68px;padding:6px;font-size:.78rem}.pad b{display:block;font-size:1.25rem}.f{grid-column:2}.l{grid-column:1;grid-row:2}.s{grid-column:2;grid-row:2}.r{grid-column:3;grid-row:2}.b{grid-column:2;grid-row:3}
+.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:340px;margin:22px auto}.pad button{touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;min-height:68px;padding:6px;font-size:.78rem}.pad b{display:block;font-size:1.25rem;pointer-events:none}.f{grid-column:2}.l{grid-column:1;grid-row:2}.s{grid-column:2;grid-row:2}.r{grid-column:3;grid-row:2}.b{grid-column:2;grid-row:3}
 label{display:grid;gap:5px;color:var(--muted);font-size:.85rem;margin:10px 0}input,select{width:100%;min-width:0}.step{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,.8fr) auto;gap:5px;align-items:end}.step label{margin:4px 0}.step button{margin-bottom:4px}.route{border-top:1px solid var(--line);padding:12px 0;overflow-wrap:anywhere}.route .actions{justify-content:flex-start}.route p{margin:5px 0 9px}.feedback{min-height:3em}.error{color:var(--red)}details{margin-top:16px}summary{cursor:pointer;color:var(--muted)}.short{justify-content:flex-start}.editor-actions{margin-top:12px}
 @media(max-width:720px){.grid{grid-template-columns:1fr}.telemetry{grid-template-columns:repeat(2,1fr)}}@media(max-width:370px){.step{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
@@ -28,6 +28,8 @@ label{display:grid;gap:5px;color:var(--muted);font-size:.85rem;margin:10px 0}inp
 <div class="tile"><span>Voltage</span><strong id="voltage">—</strong></div>
 <div class="tile"><span>Obstacle</span><strong id="obstacle">—</strong></div>
 <div class="tile"><span>Firebase direction</span><strong id="direction">—</strong></div>
+<div class="tile"><span>Parking Slot 1</span><strong id="slot1">—</strong></div>
+<div class="tile"><span>Parking Slot 2</span><strong id="slot2">—</strong></div>
 </section>
 <div class="grid">
 <section class="panel">
@@ -85,6 +87,18 @@ let unsubscribe = [];
 function message(text, error = false) {
   el("status").textContent = text;
   el("status").classList.toggle("error", error);
+}
+
+function showSlot(id, slotValue, ultraValue) {
+  const output = el(id);
+  const values = [slotValue, ultraValue].map(value =>
+    value === 1 || value === "1" ? true : value === 0 || value === "0" ? false : null
+  );
+  const known = values.some(value => value !== null);
+  const engaged = values.some(value => value === true);
+  output.textContent = known ? (engaged ? "Engaged" : "Available") : "—";
+  output.classList.toggle("engaged", known && engaged);
+  output.classList.toggle("available", known && !engaged);
 }
 
 function controls() {
@@ -150,6 +164,8 @@ function watchConnection() {
       el("voltage").textContent = typeof data.Voltage === "number" ? data.Voltage.toFixed(2) + " V" : "—";
       el("obstacle").textContent = data.Obstacle == 1 ? "Detected" : data.Obstacle == 0 ? "Clear" : "—";
       el("direction").textContent = data.direction ?? "—";
+      showSlot("slot1", data.Slot1, data.Ultra_Slot1);
+      showSlot("slot2", data.Slot2, data.Ultra_Slot2);
     }, permission),
     onValue(routesRef, snapshot => {
       routesLoaded = true;
@@ -181,18 +197,20 @@ el("manual").onclick = () => changeMode(false);
 el("auto").onclick = () => changeMode(true);
 
 function press(direction, key) {
-  if (!ready || !Object.hasOwn(labels, direction)) return;
+  if (!ready || !Object.hasOwn(labels, direction)) return false;
   if (playback) {
     if (direction === "S") stopPlayback();
-    return;
+    return false;
   }
   if (active) {
-    if (direction !== "S" || active.direction === "S") return;
+    if (direction !== "S" || active.direction === "S") return false;
     release();
   }
   active = {direction, key, started: performance.now(), record: auto};
   controls();
   send(direction);
+  message(auto ? "Recording " + labels[direction] + "… release to add the step." : labels[direction] + " active.");
+  return true;
 }
 
 function release(key = null, record = true) {
@@ -201,17 +219,20 @@ function release(key = null, record = true) {
   active = null;
   if (ready && held.direction !== "S") send("S");
   if (record && held.record) {
-    addRow({direction: held.direction, durationMs: Math.max(1, Math.round(performance.now() - held.started))});
+    const durationMs = Math.max(1, Math.round(performance.now() - held.started));
+    addRow({direction: held.direction, durationMs});
+    message("Recorded " + labels[held.direction] + " for " + durationMs + " ms.");
   }
   controls();
 }
 
 for (const button of buttons) {
   button.addEventListener("pointerdown", event => {
-    if (event.button !== 0) return;
+    if (event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
     event.preventDefault();
-    button.setPointerCapture(event.pointerId);
-    press(button.dataset.dir, event.pointerId);
+    if (!press(button.dataset.dir, event.pointerId)) return;
+    try { button.setPointerCapture(event.pointerId); }
+    catch { /* Document-level pointerup still completes the press. */ }
   });
   for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
     button.addEventListener(type, event => release(event.pointerId));
@@ -226,6 +247,11 @@ for (const button of buttons) {
   });
   button.addEventListener("blur", () => release(button));
   button.addEventListener("contextmenu", event => event.preventDefault());
+}
+// A release can occur outside the original button when capture is unsupported
+// or cancelled by a mobile browser. Always finish the matching active press.
+for (const type of ["pointerup", "pointercancel"]) {
+  document.addEventListener(type, event => release(event.pointerId), true);
 }
 const keys = {ArrowUp:"F", ArrowDown:"B", ArrowLeft:"L", ArrowRight:"R", Escape:"S"};
 window.addEventListener("keydown", event => {
